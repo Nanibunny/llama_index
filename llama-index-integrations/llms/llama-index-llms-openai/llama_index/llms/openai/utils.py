@@ -659,11 +659,13 @@ def to_openai_responses_message_dict(
                         }
                     )
         elif isinstance(block, ToolCallBlock):
+            import json
+
             tool_calls.extend(
                 [
                     {
                         "type": "function_call",
-                        "arguments": block.tool_kwargs,
+                        "arguments": block.tool_kwargs if isinstance(block.tool_kwargs, str) else json.dumps(block.tool_kwargs),
                         "call_id": block.tool_call_id,
                         "name": block.tool_name,
                     }
@@ -674,14 +676,26 @@ def to_openai_responses_message_dict(
             raise ValueError(msg)
 
     if "tool_calls" in message.additional_kwargs:
-        message_dicts = [
-            tool_call if isinstance(tool_call, dict) else tool_call.model_dump()
-            for tool_call in message.additional_kwargs["tool_calls"]
-        ]
+        import json
 
-        return [*reasoning, *message_dicts]
+        message_dicts = []
+        for tool_call in message.additional_kwargs["tool_calls"]:
+            tc = tool_call if isinstance(tool_call, dict) else tool_call.model_dump()
+            if "function" in tc and isinstance(tc["function"].get("arguments"), dict):
+                tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
+            message_dicts.append(tc)
+
+        items = [*reasoning]
+        if content_txt != "":
+            items.append({"role": "assistant", "content": content_txt})
+        items.extend(message_dicts)
+        return items
     elif tool_calls:
-        return [*reasoning, *tool_calls]
+        items = [*reasoning]
+        if content_txt != "":
+            items.append({"role": "assistant", "content": content_txt})
+        items.extend(tool_calls)
+        return items
 
     # NOTE: Sending a null value (None) for Tool Message to OpenAI will cause error
     # It's only Allowed to send None if it's an Assistant Message and either a function call or tool calls were performed
@@ -737,6 +751,11 @@ def to_openai_responses_message_dict(
                 else content
             ),
         }
+
+        if message.role == MessageRole.ASSISTANT:
+            phase = message.additional_kwargs.get("phase")
+            if phase in ("commentary", "final_answer"):
+                message_dict["phase"] = phase
 
     # TODO: O1 models do not support system prompts
     if (

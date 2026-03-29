@@ -315,7 +315,7 @@ class OpenAIResponses(FunctionCallingLLM):
         )
 
         # TODO: Temp forced to 1.0 for o1
-        if model in O1_MODELS:
+        if model.startswith(("o1-", "o3-", "o4-", "gpt-5-", "gpt-5.")):
             temperature = 1.0
 
         super().__init__(
@@ -421,10 +421,10 @@ class OpenAIResponses(FunctionCallingLLM):
             "user": self.user,
         }
 
-        if self.model in O1_MODELS and self.reasoning_options is not None:
+        if self.model.startswith(("o1-", "o3-", "o4-", "gpt-5-", "gpt-5.")) and self.reasoning_options is not None:
             model_kwargs["reasoning"] = self.reasoning_options
 
-        if self.reasoning_options is not None or self.model in O1_MODELS:
+        if self.reasoning_options is not None or self.model.startswith(("o1-", "o3-", "o4-", "gpt-5-", "gpt-5.")):
             params_to_exclude_for_reasoning = {
                 "top_p",
                 "temperature",
@@ -473,8 +473,12 @@ class OpenAIResponses(FunctionCallingLLM):
         message = ChatMessage(role=MessageRole.ASSISTANT, blocks=[])
         additional_kwargs = {"built_in_tool_calls": []}
         blocks: List[ContentBlock] = []
+        phase = None
         for item in output:
             if isinstance(item, ResponseOutputMessage):
+                item_phase = getattr(item, "phase", None)
+                if item_phase in ("commentary", "final_answer"):
+                    phase = item_phase
                 for part in item.content:
                     if hasattr(part, "text"):
                         blocks.append(TextBlock(text=part.text))
@@ -527,6 +531,9 @@ class OpenAIResponses(FunctionCallingLLM):
                     )
                 )
 
+        if phase is not None:
+            additional_kwargs["phase"] = phase
+
         return ChatResponse(message=message, additional_kwargs=additional_kwargs)
 
     @llm_retry_decorator
@@ -552,11 +559,13 @@ class OpenAIResponses(FunctionCallingLLM):
         chat_response.raw = response
         chat_response.additional_kwargs["usage"] = response.usage
         if hasattr(response.usage.output_tokens_details, "reasoning_tokens"):
-            for block in chat_response.message.blocks:
-                if isinstance(block, ThinkingBlock):
-                    block.num_tokens = (
-                        response.usage.output_tokens_details.reasoning_tokens
-                    )
+            reasoning_blocks = [b for b in chat_response.message.blocks if isinstance(b, ThinkingBlock)]
+            if reasoning_blocks:
+                total = response.usage.output_tokens_details.reasoning_tokens or 0
+                per_block = total // len(reasoning_blocks)
+                remainder = total % len(reasoning_blocks)
+                for i, block in enumerate(reasoning_blocks):
+                    block.num_tokens = per_block + (1 if i < remainder else 0)
 
         return chat_response
 
